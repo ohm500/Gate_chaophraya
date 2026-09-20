@@ -1,16 +1,33 @@
 import sys
 import os
+import io
 import asyncio
 import json
 import math
+import pandas as pd
 from datetime import datetime
 from typing import Optional
 
-import socketio
+# --- นำเข้า FastAPI และไลบรารีที่เกี่ยวข้อง ---
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+import socketio
+from dotenv import load_dotenv
+from supabase import create_client, Client
 
+# --- โหลด Environment Variables ---
+load_dotenv()
+sb_url: str = os.getenv("SUPABASE_URL")
+sb_key: str = os.getenv("SUPABASE_KEY")
+
+# --- สร้างตัวเชื่อมต่อฐานข้อมูล Supabase ---
+if sb_url and sb_key:
+    supabase: Client = create_client(sb_url, sb_key)
+else:
+    print("⚠️ คำเตือน: หา URL หรือ Key ของ Supabase ไม่พบในไฟล์ .env")
+
+# --- นำเข้าโมดูลคำนวณของนายท่าน ---
 from gate_calculator import (
     calculate_gate_openings,
     SILL_ELEV,
@@ -25,18 +42,34 @@ if sys.platform == "win32":
 
 app = FastAPI()
 
-# 🔧 กำหนด origin ที่อนุญาตผ่าน environment variable
-_allowed_origins_env = os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000")
-ALLOWED_ORIGINS = [origin.strip() for origin in _allowed_origins_env.split(",") if origin.strip()]
+# ==============================================================
+# 🛡️ ตั้งค่าความปลอดภัย (CORS) แบบอัจฉริยะ
+# ==============================================================
+origins_env = os.getenv("ALLOWED_ORIGINS", "*")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+if origins_env == "*":
+    # กรณีใส่ * อนุญาตให้เข้าได้ทุกเว็บ
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=".*", 
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+else:
+    # กรณีระบุชื่อเว็บ: หั่นด้วยลูกน้ำ (,) และตัดเครื่องหมาย (/) ตัวสุดท้ายออกให้ป้องกัน Error
+    origins = [x.strip().rstrip('/') for x in origins_env.split(",") if x.strip()]
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
+# ==============================================================
+# 📡 ระบบ Socket.IO (เชื่อมต่อเซิร์ฟเวอร์แม่)
+# ==============================================================
 sio = socketio.AsyncClient()
 
 latest_dam_data = {
@@ -50,7 +83,6 @@ latest_dam_data = {
 
 SOCKETIO_URL = "http://110.49.150.236"
 SOCKETIO_RETRY_DELAY_SEC = 5  
-
 
 @sio.event
 async def connect():
@@ -124,15 +156,13 @@ async def startup_event():
     asyncio.create_task(start_socketio())
 
 # ==============================================================
-# Endpoint สำหรับหน้า Landing Page (ดึงข้อมูลน้ำ)
+# 🚀 API Endpoints
 # ==============================================================
+
 @app.get("/api/v1/realtime")
 def get_realtime():
     return latest_dam_data
 
-# ==============================================================
-# Endpoints สำหรับหน้า โปรแกรมคำนวณ (ใช้คำนวณค่าต่างๆ)
-# ==============================================================
 @app.get("/api/v1/constants")
 def get_constants():
     return {
@@ -140,8 +170,8 @@ def get_constants():
         "gate_width": GATE_WIDTH,
         "max_opening": MAX_OPENING,
         "g": G,
-        "cs_free": 0.65,       # ล็อกค่าให้ส่งกลับเป็น 0.65
-        "cs_submerged": 0.80,  # ล็อกค่าให้ส่งกลับเป็น 0.80
+        "cs_free": 0.65,      
+        "cs_submerged": 0.80, 
         "deep_gates": DEEP_GATES,
     }
 
@@ -175,7 +205,6 @@ def calculate_flow(
 
     total_active_width = active_count * GATE_WIDTH
     
-    # 🚨 แก้บั๊กเปลี่ยนจาก CS_SUBMERGED เป็นเลข 0.80 โดยตรง
     a_target = q_target / (0.80 * math.sqrt(2 * G * delta_h)) if delta_h > 0 else 0
     target_opening_m = a_target / total_active_width if total_active_width > 0 else 0
 
@@ -183,7 +212,6 @@ def calculate_flow(
     for i in range(0, 11):
         h = i / 100.0
         a = total_active_width * h
-        # 🚨 แก้บั๊กเปลี่ยนจาก CS_SUBMERGED เป็นเลข 0.80 โดยตรง
         q_calc = 0.80 * a * math.sqrt(2 * G * delta_h)
         curve_points.append([h, round(q_calc, 2)])
 
@@ -217,5 +245,115 @@ def calculate_flow(
         "capacity_check": capacity_check
     }
 
+@app.get("/api/v1/history/{station_name}")
+def get_station_history(station_name: str, limit: int = 168):
+    try:
+        response = supabase.table("water_history") \
+            .select("record_date, record_time, water_level, discharge") \
+            .eq("station_name", station_name) \
+            .order("record_date", desc=False) \
+            .order("record_time", desc=False) \
+            .limit(limit) \
+            .execute()
+        
+        return {
+            "status": "success",
+            "station": station_name,
+            "total_records": len(response.data),
+            "data": response.data
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+# --- ฟังก์ชันแปลงวันที่ ---
+def convert_thai_date(thai_date_str):
+    if pd.isna(thai_date_str): return None
+    if isinstance(thai_date_str, pd.Timestamp): return thai_date_str.strftime("%Y-%m-%d")
+        
+    months = {
+        "มกราคม": "01", "กุมภาพันธ์": "02", "มีนาคม": "03", "เมษายน": "04",
+        "พฤษภาคม": "05", "มิถุนายน": "06", "กรกฎาคม": "07", "สิงหาคม": "08",
+        "กันยายน": "09", "ตุลาคม": "10", "พฤศจิกายน": "11", "ธันวาคม": "12"
+    }
+    try:
+        date_str = str(thai_date_str).strip()
+        if "-" in date_str and len(date_str) >= 10: return date_str[:10]
+        parts = date_str.replace("วันที่ ", "").strip().split()
+        day = int(parts[0])
+        month_name = parts[1]
+        year = int(parts[2])
+        if year > 2500: year -= 543
+        return f"{year}-{months[month_name]}-{day:02d}"
+    except:
+        return None
+
+@app.post("/api/v1/upload-history")
+async def upload_history_data(file: UploadFile = File(...)):
+    try:
+        contents = await file.read()
+        df = pd.read_excel(io.BytesIO(contents), header=None)
+        
+        date_row, station_row, type_row = -1, -1, -1
+        for i in range(min(15, len(df))):
+            row_str = df.iloc[i].astype(str)
+            if row_str.str.contains("วันที่").any() or isinstance(df.iloc[i, 1], pd.Timestamp): date_row = i
+            if row_str.str.contains("C.2").any() or row_str.str.contains("P.17").any(): station_row = i
+            if row_str.str.contains("ปริมาณ").any() or row_str.str.contains("ระดับ").any(): type_row = i
+
+        if date_row == -1 or station_row == -1 or type_row == -1:
+            return {"status": "error", "message": "โครงสร้างไฟล์ Excel ไม่ถูกต้อง ไม่พบหัวตารางที่ต้องการ"}
+
+        df.iloc[date_row] = df.iloc[date_row].ffill() 
+        df.iloc[station_row] = df.iloc[station_row].ffill() 
+
+        records = {}
+        data_start_row = type_row + 1
+
+        for col_idx in range(1, len(df.columns)):
+            date_raw = df.iloc[date_row, col_idx]
+            station = str(df.iloc[station_row, col_idx]).strip()
+            measure_type_raw = str(df.iloc[type_row, col_idx])
+            
+            is_level = "ระดับ" in measure_type_raw
+            is_discharge = "ปริมาณ" in measure_type_raw
+            
+            if not (is_level or is_discharge): continue
+            
+            sql_date = convert_thai_date(date_raw)
+            if not sql_date: continue
+            
+            for row_idx in range(data_start_row, len(df)):
+                time_raw = df.iloc[row_idx, 0]
+                if pd.isna(time_raw): continue
+                try:
+                    hour = int(float(time_raw))
+                    time_sql = "23:59:59" if hour == 24 else f"{hour:02d}:00:00"
+                except:
+                    continue
+                    
+                val = df.iloc[row_idx, col_idx]
+                if pd.isna(val) or str(val).strip() == "" or str(val).strip() == "-": continue 
+                
+                key = (sql_date, time_sql, station)
+                if key not in records:
+                    records[key] = {"record_date": sql_date, "record_time": time_sql, "station_name": station, "water_level": None, "discharge": None}
+                    
+                if is_level: records[key]["water_level"] = float(val)
+                elif is_discharge: records[key]["discharge"] = float(val)
+
+        final_data = list(records.values())
+
+        if len(final_data) > 0:
+            response = supabase.table("water_history").upsert(
+                final_data, 
+                on_conflict="record_date,record_time,station_name"
+            ).execute()
+            return {"status": "success", "message": f"✅ อัปโหลดและประมวลผลสำเร็จ! นำเข้าข้อมูล {len(final_data)} แถว"}
+        else:
+            return {"status": "warning", "message": "⚠️ ไม่พบตัวเลขข้อมูลในไฟล์ที่อัปโหลด"}
+
+    except Exception as e:
+        return {"status": "error", "message": f"❌ เกิดข้อผิดพลาด: {str(e)}"}
+    
 if __name__ == "__main__":
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
