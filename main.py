@@ -13,10 +13,11 @@ import uvicorn
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 import socketio
-from dotenv import load_dotenv
-from supabase import create_client, Client
+from dotenv import load_dotenv # <-- นำเข้า dotenv ที่เพิ่งเพิ่มใน requirements.txt
+from supabase import create_client, Client # <-- นำเข้า supabase ที่เพิ่งเพิ่มใน requirements.txt
 
 # --- โหลด Environment Variables ---
+# โค้ดส่วนนี้จะอ่านค่าจากไฟล์ .env หรือจากค่าที่ตั้งไว้ใน Render
 load_dotenv()
 sb_url: str = os.getenv("SUPABASE_URL")
 sb_key: str = os.getenv("SUPABASE_KEY")
@@ -25,7 +26,7 @@ sb_key: str = os.getenv("SUPABASE_KEY")
 if sb_url and sb_key:
     supabase: Client = create_client(sb_url, sb_key)
 else:
-    print("⚠️ คำเตือน: หา URL หรือ Key ของ Supabase ไม่พบในไฟล์ .env")
+    print("⚠️ คำเตือน: หา URL หรือ Key ของ Supabase ไม่พบในไฟล์ .env หรือ Environment Variable")
 
 # --- นำเข้าโมดูลคำนวณของนายท่าน ---
 from gate_calculator import (
@@ -45,13 +46,14 @@ app = FastAPI()
 # ==============================================================
 # 🛡️ ตั้งค่าความปลอดภัย (CORS) แบบอัจฉริยะ
 # ==============================================================
+# อ่านค่า ALLOWED_ORIGINS จาก Environment Variable (ค่าเริ่มต้นคือ *)
 origins_env = os.getenv("ALLOWED_ORIGINS", "*")
 
 if origins_env == "*":
     # กรณีใส่ * อนุญาตให้เข้าได้ทุกเว็บ
     app.add_middleware(
         CORSMiddleware,
-        allow_origin_regex=".*", 
+        allow_origins=["*"], 
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
