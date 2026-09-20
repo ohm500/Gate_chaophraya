@@ -7,19 +7,16 @@ import math
 import pandas as pd
 from datetime import datetime
 from typing import Optional
-from dotenv import load_dotenv
-from supabase import create_client, Client
 
 # --- นำเข้า FastAPI และไลบรารีที่เกี่ยวข้อง ---
 import uvicorn
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 import socketio
-from dotenv import load_dotenv # <-- นำเข้า dotenv ที่เพิ่งเพิ่มใน requirements.txt
-from supabase import create_client, Client # <-- นำเข้า supabase ที่เพิ่งเพิ่มใน requirements.txt
+from dotenv import load_dotenv
+from supabase import create_client, Client
 
 # --- โหลด Environment Variables ---
-# โค้ดส่วนนี้จะอ่านค่าจากไฟล์ .env หรือจากค่าที่ตั้งไว้ใน Render
 load_dotenv()
 sb_url: str = os.getenv("SUPABASE_URL")
 sb_key: str = os.getenv("SUPABASE_KEY")
@@ -28,7 +25,7 @@ sb_key: str = os.getenv("SUPABASE_KEY")
 if sb_url and sb_key:
     supabase: Client = create_client(sb_url, sb_key)
 else:
-    print("⚠️ คำเตือน: หา URL หรือ Key ของ Supabase ไม่พบในไฟล์ .env หรือ Environment Variable")
+    print("⚠️ คำเตือน: หา URL หรือ Key ของ Supabase ไม่พบในไฟล์ .env")
 
 # --- นำเข้าโมดูลคำนวณของนายท่าน ---
 from gate_calculator import (
@@ -48,19 +45,17 @@ app = FastAPI()
 # ==============================================================
 # 🛡️ ตั้งค่าความปลอดภัย (CORS) แบบอัจฉริยะ
 # ==============================================================
-# อ่านค่า ALLOWED_ORIGINS จาก Environment Variable (ค่าเริ่มต้นคือ *)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "http://chaophraya.rid.go.th",
-        "https://chaophraya.rid.go.th",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000"
-    ]
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+origins_env = os.getenv("ALLOWED_ORIGINS", "*")
+
+if origins_env == "*":
+    # กรณีใส่ * อนุญาตให้เข้าได้ทุกเว็บ
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=".*", 
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 else:
     # กรณีระบุชื่อเว็บ: หั่นด้วยลูกน้ำ (,) และตัดเครื่องหมาย (/) ตัวสุดท้ายออกให้ป้องกัน Error
     origins = [x.strip().rstrip('/') for x in origins_env.split(",") if x.strip()]
