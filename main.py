@@ -40,6 +40,7 @@ app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
+        "https://gate-chaophraya.onrender.com",
         "http://chaophraya.rid.go.th",
         "https://chaophraya.rid.go.th",
         "http://localhost:3000",
