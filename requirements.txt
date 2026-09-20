@@ -3,3 +3,6 @@ uvicorn
 python-socketio
 aiohttp
 websockets
+pandas 
+openpyxl
+python-multipart
