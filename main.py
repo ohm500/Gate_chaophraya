@@ -7,6 +7,8 @@ import math
 import pandas as pd
 from datetime import datetime
 from typing import Optional
+from dotenv import load_dotenv
+from supabase import create_client, Client
 
 # --- นำเข้า FastAPI และไลบรารีที่เกี่ยวข้อง ---
 import uvicorn
@@ -54,7 +56,7 @@ app.add_middleware(
         "https://chaophraya.rid.go.th",
         "http://localhost:3000",
         "http://127.0.0.1:3000"
-    ],
+    ]
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
