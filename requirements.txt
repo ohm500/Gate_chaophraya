@@ -3,6 +3,8 @@ uvicorn
 python-socketio
 aiohttp
 websockets
-pandas 
+pandas
 openpyxl
 python-multipart
+python-dotenv
+supabase
