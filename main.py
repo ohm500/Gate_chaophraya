@@ -47,17 +47,18 @@ app = FastAPI()
 # 🛡️ ตั้งค่าความปลอดภัย (CORS) แบบอัจฉริยะ
 # ==============================================================
 # อ่านค่า ALLOWED_ORIGINS จาก Environment Variable (ค่าเริ่มต้นคือ *)
-origins_env = os.getenv("ALLOWED_ORIGINS", "*")
-
-if origins_env == "*":
-    # กรณีใส่ * อนุญาตให้เข้าได้ทุกเว็บ
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"], 
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://chaophraya.rid.go.th",
+        "https://chaophraya.rid.go.th",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000"
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 else:
     # กรณีระบุชื่อเว็บ: หั่นด้วยลูกน้ำ (,) และตัดเครื่องหมาย (/) ตัวสุดท้ายออกให้ป้องกัน Error
     origins = [x.strip().rstrip('/') for x in origins_env.split(",") if x.strip()]
