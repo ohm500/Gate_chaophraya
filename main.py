@@ -300,5 +300,27 @@ async def upload_history_data(file: UploadFile = File(...)):
         return {"status": "warning", "message": "⚠️ ไม่พบตัวเลขข้อมูลในไฟล์ที่อัปโหลด"}
     except Exception as e: return {"status": "error", "message": str(e)}
 
+# ==============================================================
+# 📈 API ดึงข้อมูลประวัติสำหรับวาดกราฟ (ที่หายไป)
+# ==============================================================
+@app.get("/api/v1/history/{station_name}")
+def get_history(station_name: str, limit: int = 168):
+    try:
+        if not supabase:
+            return {"status": "error", "message": "ไม่พบการเชื่อมต่อฐานข้อมูล"}
+            
+        res = supabase.table("water_history") \
+            .select("*") \
+            .eq("station_name", station_name) \
+            .order("record_date", desc=True) \
+            .order("record_time", desc=True) \
+            .limit(limit).execute()
+        
+        # กลับด้านข้อมูล (Reverse) เพื่อให้กราฟเรียงจากอดีต -> ปัจจุบัน (ซ้ายไปขวา)
+        data = res.data[::-1] if res.data else []
+        return {"status": "success", "data": data}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}    
+
 if __name__ == "__main__":
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
