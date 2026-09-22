@@ -8,3 +8,5 @@ openpyxl
 python-multipart
 python-dotenv
 supabase
+httpx
+beautifulsoup4

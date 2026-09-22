@@ -204,16 +204,24 @@ def calculate_flow(q_target: float, delta_h: float, gate_status: str, wl_up: flo
         gate_list, capacity_check = [], {"requested_q": q_target, "achieved_q": 0, "shortfall_q": q_target, "is_sufficient": False}
     return {"status": "success", "results": {"target_opening_m": round(target_opening_m, 4), "target_opening_cm": round(target_opening_m * 100, 2)}, "chart_data": [[i/100.0, round(0.80*(total_active_width*(i/100.0))*math.sqrt(2*G*delta_h), 2)] for i in range(11)], "gate_openings": gate_list, "capacity_check": capacity_check}
 
-# ==============================================================
-# 📂 API นำเข้าข้อมูลประวัติ (Bulletproof Version ทลายทุกช่องว่าง)
-# ==============================================================
+def convert_thai_date(thai_date_str):
+    if pd.isna(thai_date_str): return None
+    if isinstance(thai_date_str, pd.Timestamp): return thai_date_str.strftime("%Y-%m-%d")
+    months = {"มกราคม": "01", "กุมภาพันธ์": "02", "มีนาคม": "03", "เมษายน": "04", "พฤษภาคม": "05", "มิถุนายน": "06", "กรกฎาคม": "07", "สิงหาคม": "08", "กันยายน": "09", "ตุลาคม": "10", "พฤศจิกายน": "11", "ธันวาคม": "12"}
+    try:
+        date_str = str(thai_date_str).strip()
+        if "-" in date_str and len(date_str) >= 10: return date_str[:10]
+        parts = date_str.replace("วันที่ ", "").strip().split()
+        year = int(parts[2])
+        return f"{year - 543 if year > 2500 else year}-{months[parts[1]]}-{int(parts[0]):02d}"
+    except: return None
+
 @app.post("/api/v1/upload-history")
 async def upload_history_data(file: UploadFile = File(...)):
     try:
         contents = await file.read()
         filename = file.filename.lower()
         
-        # 1. ดึงวันที่จากชื่อไฟล์ (ชัวร์ที่สุด)
         fallback_date = None
         match = re.search(r'(\d{1,2})_(\d{1,2})_(\d{4})', filename)
         if match:
@@ -223,7 +231,6 @@ async def upload_history_data(file: UploadFile = File(...)):
         if not fallback_date:
             return {"status": "error", "message": "ไม่พบรูปแบบวันที่ในชื่อไฟล์ โปรดตั้งชื่อไฟล์เช่น Hourly_9_22_2026.csv"}
 
-        # 2. แปลงไฟล์เป็นตาราง
         if filename.endswith('.csv'):
             try: content_str = contents.decode('utf-8-sig')
             except: content_str = contents.decode('tis-620')
@@ -237,7 +244,6 @@ async def upload_history_data(file: UploadFile = File(...)):
 
         df = df.fillna('')
         
-        # 3. หาบรรทัดที่เป็นประเภทข้อมูล (ระดับ/ปริมาณ)
         type_row = -1
         for i in range(min(15, len(df))):
             if any("ปริมาณ" in str(x) or "ระดับ" in str(x) for x in df.iloc[i]):
@@ -247,14 +253,12 @@ async def upload_history_data(file: UploadFile = File(...)):
         if type_row == -1: 
             return {"status": "error", "message": "ไม่พบแถวประเภทข้อมูล(ระดับ/ปริมาณ) ใน 15 บรรทัดแรก"}
 
-        # 4. หาบรรทัดที่เป็นชื่อสถานี (อยู่เหนือ type_row เสมอ)
         station_row = -1
         for i in range(type_row):
             if any("C.2" in str(x) or "P.17" in str(x) or "ค่ายจิรประวัติ" in str(x) for x in df.iloc[i]):
                 station_row = i
                 break
 
-        # 5. ถมช่องว่างชื่อสถานีให้เต็ม (แก้ปัญหา Excel Merge Cells กลายเป็นช่องว่างใน CSV)
         if station_row != -1:
             curr_st = ""
             for col_idx in range(len(df.columns)):
@@ -265,16 +269,16 @@ async def upload_history_data(file: UploadFile = File(...)):
                     df.iloc[station_row, col_idx] = curr_st
 
         records = {}
-        # 6. ไล่อ่านข้อมูลทีละคอลัมน์
         for col_idx in range(1, len(df.columns)):
             st_raw = str(df.iloc[station_row, col_idx]) if station_row != -1 else ""
             meas_raw = str(df.iloc[type_row, col_idx])
             
-            # แปลงชื่อสถานีให้ตรงกับฐานข้อมูล
             mapped_st = None
-            if "เหนือเขื่อน" in meas_raw or "C.66" in st_raw:
+            
+            # 🔥 ล็อคเป้า C.13 เหนือเขื่อน จากคำว่า "เหนือ" ในช่องประเภทข้อมูลเท่านั้น ป้องกันคอลัมน์ระดับตลิ่งมาทับ 🔥
+            if "เหนือ" in meas_raw:
                 mapped_st = "C.13_UP"
-            elif "C.13" in st_raw or "ท้าย" in st_raw or "สรรพยา" in st_raw:
+            elif "C.13" in st_raw or "ท้ายเขื่อน" in st_raw:
                 mapped_st = "C.13_DOWN"
             elif "C.2" in st_raw or "ค่ายจิร" in st_raw:
                 mapped_st = "C.2"
@@ -294,20 +298,17 @@ async def upload_history_data(file: UploadFile = File(...)):
                 
             if not (is_level or is_discharge): continue
             
-            # 7. อ่านตัวเลขในแต่ละชั่วโมง
             for row_idx in range(type_row + 1, len(df)):
                 time_raw = str(df.iloc[row_idx, 0]).strip()
                 val_raw = str(df.iloc[row_idx, col_idx]).replace(',', '').strip()
                 
                 if not time_raw or not val_raw or val_raw in ['-', '***', '**']: continue
                 
-                # สกัดเอาเฉพาะตัวเลข ทิ้งอักขระขยะ
                 num_match = re.search(r'[-+]?\d*\.?\d+', val_raw)
                 if not num_match: continue
                 val_float = float(num_match.group())
                 if math.isnan(val_float): continue
                 
-                # แปลงเวลา
                 try: 
                     hr = int(float(time_raw))
                     time_sql = "23:59:59" if hr == 24 else f"{hr:02d}:00:00"
@@ -315,7 +316,6 @@ async def upload_history_data(file: UploadFile = File(...)):
                     if ":" in time_raw: time_sql = time_raw if len(time_raw) >= 8 else f"{time_raw}:00"
                     else: continue
                     
-                # เก็บใส่กล่อง
                 key = (fallback_date, time_sql, mapped_st)
                 if key not in records:
                     records[key] = {
@@ -330,13 +330,11 @@ async def upload_history_data(file: UploadFile = File(...)):
 
         final_data = list(records.values())
         if final_data:
-            # ใช้กฎ on_conflict ด้วยคอลัมน์มาตรฐาน
             res = supabase.table("water_history").upsert(final_data, on_conflict="record_date,record_time,station_name").execute()
             return {"status": "success", "message": f"✅ นำเข้าข้อมูลสำเร็จ! อัปเดตเข้าระบบ {len(final_data)} รายการ"}
         return {"status": "warning", "message": "⚠️ ไม่พบตัวเลขข้อมูลที่ตรงกับเงื่อนไขในไฟล์"}
     
     except Exception as e:
-        # หากพัง จะพิมพ์ Error ออกมาให้เห็นชัดเจนบนหน้าเว็บ
         error_details = traceback.format_exc()
         print(f"🔥 Upload Error: \n{error_details}")
         return {"status": "error", "message": f"เกิดข้อผิดพลาด: {str(e)}"}
