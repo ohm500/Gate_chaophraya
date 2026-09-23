@@ -216,20 +216,39 @@ def convert_thai_date(thai_date_str):
         return f"{year - 543 if year > 2500 else year}-{months[parts[1]]}-{int(parts[0]):02d}"
     except: return None
 
+# ✨ สกัดวันที่จากชื่อไฟล์ได้อย่างชาญฉลาด ไม่ว่าจะตั้งชื่อแบบไหน
+def extract_date_from_filename(filename):
+    filename = filename.replace('.csv', '').replace('.xlsx', '').replace('.xls', '')
+    
+    # 1. ลองหาแพทเทิร์น YYYY-MM-DD หรือ YYYY_MM_DD
+    m1 = re.search(r'(\d{4})[-_](\d{1,2})[-_](\d{1,2})', filename)
+    if m1:
+        y, m, d = m1.groups()
+        return f"{y}-{int(m):02d}-{int(d):02d}"
+    
+    # 2. ลองหาแพทเทิร์น DD-MM-YYYY หรือ MM-DD-YYYY
+    m2 = re.search(r'(\d{1,2})[-_](\d{1,2})[-_](\d{4})', filename)
+    if m2:
+        p1, p2, y = m2.groups()
+        if int(p1) > 12: # ถ้าตัวหน้ามากกว่า 12 แน่นอนว่าเป็น "วัน" (DD_MM_YYYY)
+            return f"{y}-{int(p2):02d}-{int(p1):02d}"
+        elif int(p2) > 12: # ถ้าตัวหลังมากกว่า 12 แน่นอนว่าเป็น "วัน" (MM_DD_YYYY)
+            return f"{y}-{int(p1):02d}-{int(p2):02d}"
+        else: # ค่าเริ่มต้นของกรมชลฯ คือ เดือน_วัน_ปี
+            return f"{y}-{int(p1):02d}-{int(p2):02d}"
+    return None
+
+# ==============================================================
+# 📂 API นำเข้าข้อมูลประวัติ (รับรองการตั้งชื่อไฟล์ทุกรูปแบบ)
+# ==============================================================
 @app.post("/api/v1/upload-history")
 async def upload_history_data(file: UploadFile = File(...)):
     try:
         contents = await file.read()
         filename = file.filename.lower()
         
-        fallback_date = None
-        match = re.search(r'(\d{1,2})_(\d{1,2})_(\d{4})', filename)
-        if match:
-            month, day, year = match.groups()
-            fallback_date = f"{year}-{int(month):02d}-{int(day):02d}"
-
-        if not fallback_date:
-            return {"status": "error", "message": "ไม่พบรูปแบบวันที่ในชื่อไฟล์ โปรดตั้งชื่อไฟล์เช่น Hourly_9_22_2026.csv"}
+        # ใช้วิธีดึงวันที่จากชื่อไฟล์อัจฉริยะ
+        fallback_date = extract_date_from_filename(filename)
 
         if filename.endswith('.csv'):
             try: content_str = contents.decode('utf-8-sig')
@@ -253,6 +272,18 @@ async def upload_history_data(file: UploadFile = File(...)):
         if type_row == -1: 
             return {"status": "error", "message": "ไม่พบแถวประเภทข้อมูล(ระดับ/ปริมาณ) ใน 15 บรรทัดแรก"}
 
+        # ค้นหาวันที่จากคำว่า "วันที่" ในตาราง (ถ้ามี)
+        date_sql = fallback_date
+        for i in range(type_row):
+            for c in range(len(df.columns)):
+                val = str(df.iloc[i, c])
+                if "วันที่" in val:
+                    parsed = convert_thai_date(val)
+                    if parsed: date_sql = parsed
+
+        if not date_sql:
+            return {"status": "error", "message": f"ไม่พบวันที่ในไฟล์ และแกะวันที่จากชื่อไฟล์ไม่ได้ โปรดตั้งชื่อไฟล์ให้มีวันที่ เช่น 2026-09-23.csv"}
+
         station_row = -1
         for i in range(type_row):
             if any("C.2" in str(x) or "P.17" in str(x) or "ค่ายจิรประวัติ" in str(x) for x in df.iloc[i]):
@@ -274,8 +305,6 @@ async def upload_history_data(file: UploadFile = File(...)):
             meas_raw = str(df.iloc[type_row, col_idx])
             
             mapped_st = None
-            
-            # 🔥 ล็อคเป้า C.13 เหนือเขื่อน จากคำว่า "เหนือ" ในช่องประเภทข้อมูลเท่านั้น ป้องกันคอลัมน์ระดับตลิ่งมาทับ 🔥
             if "เหนือ" in meas_raw:
                 mapped_st = "C.13_UP"
             elif "C.13" in st_raw or "ท้ายเขื่อน" in st_raw:
@@ -316,10 +345,10 @@ async def upload_history_data(file: UploadFile = File(...)):
                     if ":" in time_raw: time_sql = time_raw if len(time_raw) >= 8 else f"{time_raw}:00"
                     else: continue
                     
-                key = (fallback_date, time_sql, mapped_st)
+                key = (date_sql, time_sql, mapped_st)
                 if key not in records:
                     records[key] = {
-                        "record_date": fallback_date,
+                        "record_date": date_sql,
                         "record_time": time_sql,
                         "station_name": mapped_st,
                         "water_level": None,
@@ -331,7 +360,7 @@ async def upload_history_data(file: UploadFile = File(...)):
         final_data = list(records.values())
         if final_data:
             res = supabase.table("water_history").upsert(final_data, on_conflict="record_date,record_time,station_name").execute()
-            return {"status": "success", "message": f"✅ นำเข้าข้อมูลสำเร็จ! อัปเดตเข้าระบบ {len(final_data)} รายการ"}
+            return {"status": "success", "message": f"✅ นำเข้าข้อมูลสำเร็จ! วันที่ {date_sql} จำนวน {len(final_data)} รายการ"}
         return {"status": "warning", "message": "⚠️ ไม่พบตัวเลขข้อมูลที่ตรงกับเงื่อนไขในไฟล์"}
     
     except Exception as e:
