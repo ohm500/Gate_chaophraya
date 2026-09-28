@@ -38,7 +38,7 @@ app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False, 
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -92,6 +92,28 @@ def update_marquee(data: MarqueeInput):
     marquee_state["text"] = data.text
     marquee_state["color"] = data.color
     return {"status": "success", "message": "อัปเดตข้อความอักษรวิ่งสำเร็จ!"}
+
+# ✨ เพิ่ม "marquee" เข้ามาในระบบแจ้งเตือนเฉพาะของหน้า Alert
+alert_box_state = { 
+    "title": "แจ้งปรับเพิ่มการระบายน้ำ",
+    "old_val": "1,950",
+    "new_val": "2,000",
+    "marquee": "พื้นที่ลุ่มต่ำ จ.พระนครศรีอยุธยา จ.อ่างทอง ได้รับผลกระทบ"
+}
+
+class AlertBoxInput(BaseModel):
+    title: str
+    old_val: str
+    new_val: str
+    marquee: str
+
+@app.post("/api/v1/alert-message")
+def update_alert_message(data: AlertBoxInput):
+    alert_box_state["title"] = data.title
+    alert_box_state["old_val"] = data.old_val
+    alert_box_state["new_val"] = data.new_val
+    alert_box_state["marquee"] = data.marquee
+    return {"status": "success", "message": "อัปเดตข้อความแจ้งเตือนสำเร็จ!"}
 
 sio = socketio.AsyncClient()
 latest_dam_data = {"status": "waiting", "updated_at": None, "wl_up": 15.86, "wl_down": 0, "flow": 0, "gates": {}}
@@ -169,7 +191,13 @@ def get_realtime():
             "wl_up_time": manual_time[11:16] if len(manual_time) >= 16 else "-", "wl_up": system_mode["manual_data"]["wl_up"],
             "wl_down": system_mode["manual_data"]["wl_down"], "flow": system_mode["manual_data"]["flow"],
             "gates": latest_dam_data.get("gates", {}),
-            "marquee_is_custom": marquee_state["is_custom"], "marquee_text": marquee_state["text"], "marquee_color": marquee_state["color"]
+            "marquee_is_custom": marquee_state["is_custom"], 
+            "marquee_text": marquee_state["text"], 
+            "marquee_color": marquee_state["color"],
+            "alert_title": alert_box_state["title"],
+            "alert_old_val": alert_box_state["old_val"],
+            "alert_new_val": alert_box_state["new_val"],
+            "alert_marquee": alert_box_state["marquee"] # ✨ ส่งข้อความอักษรวิ่งเฉพาะของหน้า Alert
         }
     
     combined_data = latest_dam_data.copy()
@@ -181,6 +209,12 @@ def get_realtime():
     combined_data["marquee_is_custom"] = marquee_state["is_custom"]
     combined_data["marquee_text"] = marquee_state["text"]
     combined_data["marquee_color"] = marquee_state["color"]
+    
+    combined_data["alert_title"] = alert_box_state["title"]
+    combined_data["alert_old_val"] = alert_box_state["old_val"]
+    combined_data["alert_new_val"] = alert_box_state["new_val"]
+    combined_data["alert_marquee"] = alert_box_state["marquee"] # ✨ ส่งข้อความอักษรวิ่งเฉพาะของหน้า Alert
+    
     return combined_data
 
 @app.get("/api/v1/constants")
@@ -216,38 +250,26 @@ def convert_thai_date(thai_date_str):
         return f"{year - 543 if year > 2500 else year}-{months[parts[1]]}-{int(parts[0]):02d}"
     except: return None
 
-# ✨ สกัดวันที่จากชื่อไฟล์ได้อย่างชาญฉลาด ไม่ว่าจะตั้งชื่อแบบไหน
 def extract_date_from_filename(filename):
     filename = filename.replace('.csv', '').replace('.xlsx', '').replace('.xls', '')
-    
-    # 1. ลองหาแพทเทิร์น YYYY-MM-DD หรือ YYYY_MM_DD
     m1 = re.search(r'(\d{4})[-_](\d{1,2})[-_](\d{1,2})', filename)
     if m1:
         y, m, d = m1.groups()
         return f"{y}-{int(m):02d}-{int(d):02d}"
-    
-    # 2. ลองหาแพทเทิร์น DD-MM-YYYY หรือ MM-DD-YYYY
     m2 = re.search(r'(\d{1,2})[-_](\d{1,2})[-_](\d{4})', filename)
     if m2:
         p1, p2, y = m2.groups()
-        if int(p1) > 12: # ถ้าตัวหน้ามากกว่า 12 แน่นอนว่าเป็น "วัน" (DD_MM_YYYY)
-            return f"{y}-{int(p2):02d}-{int(p1):02d}"
-        elif int(p2) > 12: # ถ้าตัวหลังมากกว่า 12 แน่นอนว่าเป็น "วัน" (MM_DD_YYYY)
-            return f"{y}-{int(p1):02d}-{int(p2):02d}"
-        else: # ค่าเริ่มต้นของกรมชลฯ คือ เดือน_วัน_ปี
-            return f"{y}-{int(p1):02d}-{int(p2):02d}"
+        if int(p1) > 12: return f"{y}-{int(p2):02d}-{int(p1):02d}"
+        elif int(p2) > 12: return f"{y}-{int(p1):02d}-{int(p2):02d}"
+        else: return f"{y}-{int(p1):02d}-{int(p2):02d}"
     return None
 
-# ==============================================================
-# 📂 API นำเข้าข้อมูลประวัติ (รับรองการตั้งชื่อไฟล์ทุกรูปแบบ)
-# ==============================================================
 @app.post("/api/v1/upload-history")
 async def upload_history_data(file: UploadFile = File(...)):
     try:
         contents = await file.read()
         filename = file.filename.lower()
         
-        # ใช้วิธีดึงวันที่จากชื่อไฟล์อัจฉริยะ
         fallback_date = extract_date_from_filename(filename)
 
         if filename.endswith('.csv'):
@@ -272,7 +294,6 @@ async def upload_history_data(file: UploadFile = File(...)):
         if type_row == -1: 
             return {"status": "error", "message": "ไม่พบแถวประเภทข้อมูล(ระดับ/ปริมาณ) ใน 15 บรรทัดแรก"}
 
-        # ค้นหาวันที่จากคำว่า "วันที่" ในตาราง (ถ้ามี)
         date_sql = fallback_date
         for i in range(type_row):
             for c in range(len(df.columns)):
